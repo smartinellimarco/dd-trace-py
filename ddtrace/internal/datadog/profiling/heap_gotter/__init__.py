@@ -6,10 +6,23 @@ and drives it through a tiny, stable C ABI:
 
     bool ddtrace_heap_gotter_install(void);      # install + report success
     bool ddtrace_heap_gotter_is_installed(void); # current install state
+    bool ddtrace_heap_gotter_live_heap_enabled(void);  # built with ddheap:free?
 
-Calling `install()` patches the process's GOT entries for heap allocation
-symbols so that Datadog's `ddheap:alloc` USDT probe sites fire on sampled allocations.
-The Full Host eBPF profiler then attaches uprobes to those sites to collect native allocation stacks.
+Calling ``install()`` patches the process's GOT entries for heap allocation
+symbols so that Datadog's ``ddheap:alloc`` USDT probe sites fire on sampled
+allocations. The Full Host eBPF profiler then attaches uprobes to those sites to
+collect native allocation flamegraphs. There is nothing to collect or upload
+from the Python side — this only *arms* the probes.
+
+``live_heap_enabled()`` reports whether the loaded cdylib was *built* with
+live-heap tracking, in which case it also emits the ``ddheap:free`` USDT and
+stamps a per-allocation retain flag so the FH profiler can reconcile frees
+against allocations for a live/retained-heap view. Live-heap is a default of the
+gotter build, so any current cdylib reports ``True``; the query stays as a
+defensive check that reflects the *actual* loaded artifact — an older alloc-only
+cdylib (or a cdylib built before this symbol existed) reports ``False`` (the
+symbol is bound defensively). This is a compile-time property, not a runtime
+toggle.
 
 If the cdylib is missing or anything goes wrong loading it, `is_available` is `False`
 and `install()` is a no-op. Loading this module must never raise.
@@ -39,6 +52,11 @@ import sysconfig
 # these two attributes to decide whether the feature can run.
 is_available: bool = False
 failure_msg: str = ""
+
+# Whether the loaded cdylib was built with live-heap tracking (ddheap:free +
+# retain flagging). Compile-time property of the artifact; see module docstring.
+# Stays False when the cdylib is absent or was built allocation-only.
+_live_heap_available: bool = False
 
 _lib: ctypes.CDLL | None = None  # kept alive for process lifetime; never dlclose'd
 # Set when install() has succeeded in this process (inherited across fork).
@@ -75,6 +93,16 @@ try:
     _lib.ddtrace_heap_gotter_is_installed.restype = ctypes.c_bool
 
     is_available = True
+
+    # Bind the live-heap capability query defensively: it only exists on cdylibs
+    # built at/after Phase 2. A missing symbol (older alloc-only build) simply
+    # leaves live-heap reported as unavailable rather than failing the load.
+    try:
+        _lib.ddtrace_heap_gotter_live_heap_enabled.argtypes = []
+        _lib.ddtrace_heap_gotter_live_heap_enabled.restype = ctypes.c_bool
+        _live_heap_available = bool(_lib.ddtrace_heap_gotter_live_heap_enabled())
+    except AttributeError:
+        _live_heap_available = False
 
 except Exception as e:
     failure_msg = str(e)
@@ -113,3 +141,15 @@ def is_installed() -> bool:
         return bool(_lib.ddtrace_heap_gotter_is_installed())
     except Exception:
         return False
+
+
+def live_heap_enabled() -> bool:
+    """Return whether the loaded cdylib was built with live-heap tracking.
+
+    Live-heap is a default of the gotter build, so any current cdylib returns
+    True: it emits the ``ddheap:free`` USDT and stamps a per-allocation retain
+    flag so the FH profiler can reconcile frees against allocations. A missing
+    cdylib, or an older alloc-only one, returns False. Compile-time property; it
+    does not change over the process lifetime.
+    """
+    return _live_heap_available

@@ -31,10 +31,20 @@ debug = "line-tables-only"
 codegen-units = 1
 
 [features]
+default = ["live-heap"]
 # Forwards to the upstream crate's test-support surface so integration tests can
 # assert the patched GOT hooks actually ran (hit counter) without needing a
 # live eBPF uprobe attach. Never enabled for shipped wheels.
 test-support = ["libdd-profiling-heap-gotter/test-support"]
+
+# Mirrors the `live-heap` upstream feature enabled unconditionally in
+# [dependencies], so `cfg!(feature = "live-heap")` can report what the compiled
+# artifact actually contains. Upstream's build.rs turns the feature into the C
+# define DD_HEAP_LIVE_TRACKING=1, which makes dd_probe_free emit the
+# `ddheap:free` USDT and the alloc side stamp the per-allocation retain flag the
+# free side reconciles against. This is a property of the compiled artifact, so
+# it cannot be flipped by the Python activator at runtime.
+live-heap = ["libdd-profiling-heap-gotter/live-heap"]
 
 [dependencies]
 # Pinned to the published crates.io release. `live-heap` enables balanced
