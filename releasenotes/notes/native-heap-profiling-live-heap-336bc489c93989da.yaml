@@ -1,0 +1,13 @@
+---
+features:
+  - |
+    profiling: This introduces experimental, opt-in native (C/C++) heap profiling with
+    live heap tracking, which reports memory that is still held rather than only
+    cumulative allocations. Set ``DD_PROFILING_NATIVE_HEAP_ENABLED=true`` together with
+    ``DD_PROFILING_ENABLED=true`` to enable it; both are disabled by default. When
+    enabled, dd-trace-py marks sampled native allocations and the frees that release
+    them, while the OpenTelemetry eBPF profiler or Datadog Host Profiler collects and
+    processes those samples outside the application process; dd-trace-py itself neither
+    collects nor uploads native heap data. This requires Linux and a wheel built with
+    ``DD_PROFILING_NATIVE_HEAP_BUILD=1``; the published wheels do not include it. It is
+    a no-op when disabled.
