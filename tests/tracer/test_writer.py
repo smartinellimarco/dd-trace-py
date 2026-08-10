@@ -1192,9 +1192,10 @@ def test_otlp_metric_tags_configured(mock_builder_class):
     ]:
         getattr(mock_builder, method_name).return_value = mock_builder
 
-    with override_global_config(
-        {
-            "tags": {
+    with (
+        mock.patch.dict(
+            config.tags,
+            {
                 "team": "apm",
                 "tier": "backend",
                 "service": "ignored",
@@ -1202,8 +1203,13 @@ def test_otlp_metric_tags_configured(mock_builder_class):
                 "version": "ignored",
                 "runtime_id": "ignored",
             },
-            "_trace_stats_additional_tags": ["customer.tier", "region"],
-        }
+            clear=True,
+        ),
+        mock.patch.object(
+            config,
+            "_trace_stats_additional_tags",
+            ["customer.tier", "region"],
+        ),
     ):
         _build_base_exporter_builder("http://localhost:8126", None, False, False, True)
 
