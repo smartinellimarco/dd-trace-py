@@ -156,17 +156,42 @@ PY
     # parser. --exclude does not help: it only drops a SONAME from dependency
     # grafting, while repair still parses every ELF listed in the wheel's RECORD.
     # So the cdylib has to leave the wheel entirely and be reinserted after.
+    # Use pure-Python stash/remove (Info-ZIP path globs are unreliable here).
     GOTTER_STASH_DIR="${WORK_DIR}/heap_gotter_stash"
-    GOTTER_PATTERN='*libdd_heap_gotter*.so'
-    if unzip -l "${BUILT_WHEEL_FILE}" | grep -q 'libdd_heap_gotter.*\.so$'; then
-      mkdir -p "${GOTTER_STASH_DIR}"
-      unzip -q "${BUILT_WHEEL_FILE}" "${GOTTER_PATTERN}" -d "${GOTTER_STASH_DIR}"
-      uv run --no-project scripts/zip_filter.py "${BUILT_WHEEL_FILE}" "${GOTTER_PATTERN}"
-    fi
+    mkdir -p "${GOTTER_STASH_DIR}"
+    BUILT_WHEEL_FILE="${BUILT_WHEEL_FILE}" GOTTER_STASH_DIR="${GOTTER_STASH_DIR}" \
+      uv run --no-project python - <<'PY'
+import os
+import zipfile
+from pathlib import Path
+
+import subprocess
+import sys
+
+wheel = Path(os.environ["BUILT_WHEEL_FILE"])
+stash = Path(os.environ["GOTTER_STASH_DIR"])
+marker = "libdd_heap_gotter"
+with zipfile.ZipFile(wheel, "r") as zf:
+    gotter = [n for n in zf.namelist() if marker in Path(n).name and n.endswith(".so")]
+    for name in gotter:
+        dest = stash / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(zf.read(name))
+        print(f"Stashed heap-gotter cdylib: {name}")
+if gotter:
+    # Remove via zip_filter so RECORD stays consistent.
+    patterns = [f"*{marker}*.so", f"*/{marker}*.so"]
+    subprocess.check_call([sys.executable, "scripts/zip_filter.py", str(wheel), *patterns])
+with zipfile.ZipFile(wheel, "r") as zf:
+    leftover = [n for n in zf.namelist() if marker in Path(n).name and n.endswith(".so")]
+if leftover:
+    raise SystemExit(f"heap-gotter still in wheel before auditwheel: {leftover}")
+print(f"heap-gotter stash count before auditwheel: {len(gotter)}")
+PY
 
     auditwheel repair -w "${TMP_WHEEL_DIR}" "${BUILT_WHEEL_FILE}"
 
-    if [[ -d "${GOTTER_STASH_DIR}" ]]; then
+    if find "${GOTTER_STASH_DIR}" -name 'libdd_heap_gotter*.so' 2>/dev/null | grep -q .; then
       REPAIRED_WHEEL_FILE=$(ls "${TMP_WHEEL_DIR}"/*.whl | head -n 1)
       GOTTER_STASH_DIR="${GOTTER_STASH_DIR}" REPAIRED_WHEEL_FILE="${REPAIRED_WHEEL_FILE}" \
         uv run --no-project python - <<'PY'
