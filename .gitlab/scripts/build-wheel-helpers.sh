@@ -171,19 +171,26 @@ import sys
 wheel = Path(os.environ["BUILT_WHEEL_FILE"])
 stash = Path(os.environ["GOTTER_STASH_DIR"])
 marker = "libdd_heap_gotter"
+# Stash both the cdylib and any .so.debug sidecars merged into the wheel —
+# auditwheel parses every ELF in RECORD, and the debug file trips
+# iter_versions the same way as the .so (pipeline 130079400).
 with zipfile.ZipFile(wheel, "r") as zf:
-    gotter = [n for n in zf.namelist() if marker in Path(n).name and n.endswith(".so")]
+    gotter = [
+        n
+        for n in zf.namelist()
+        if marker in Path(n).name and (n.endswith(".so") or n.endswith(".so.debug"))
+    ]
     for name in gotter:
         dest = stash / name
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(zf.read(name))
-        print(f"Stashed heap-gotter cdylib: {name}")
+        print(f"Stashed heap-gotter artifact: {name}")
 if gotter:
     # Remove via zip_filter so RECORD stays consistent.
-    patterns = [f"*{marker}*.so", f"*/{marker}*.so"]
+    patterns = [f"*{marker}*.so", f"*{marker}*.so.debug", f"*/{marker}*"]
     subprocess.check_call([sys.executable, "scripts/zip_filter.py", str(wheel), *patterns])
 with zipfile.ZipFile(wheel, "r") as zf:
-    leftover = [n for n in zf.namelist() if marker in Path(n).name and n.endswith(".so")]
+    leftover = [n for n in zf.namelist() if marker in Path(n).name]
 if leftover:
     raise SystemExit(f"heap-gotter still in wheel before auditwheel: {leftover}")
 print(f"heap-gotter stash count before auditwheel: {len(gotter)}")
@@ -191,7 +198,7 @@ PY
 
     auditwheel repair -w "${TMP_WHEEL_DIR}" "${BUILT_WHEEL_FILE}"
 
-    if find "${GOTTER_STASH_DIR}" -name 'libdd_heap_gotter*.so' 2>/dev/null | grep -q .; then
+    if find "${GOTTER_STASH_DIR}" \( -name 'libdd_heap_gotter*.so' -o -name 'libdd_heap_gotter*.so.debug' \) 2>/dev/null | grep -q .; then
       REPAIRED_WHEEL_FILE=$(ls "${TMP_WHEEL_DIR}"/*.whl | head -n 1)
       GOTTER_STASH_DIR="${GOTTER_STASH_DIR}" REPAIRED_WHEEL_FILE="${REPAIRED_WHEEL_FILE}" \
         uv run --no-project python - <<'PY'
@@ -206,7 +213,13 @@ from pathlib import Path
 wheel = Path(os.environ["REPAIRED_WHEEL_FILE"])
 stash = Path(os.environ["GOTTER_STASH_DIR"])
 
-additions = {str(p.relative_to(stash)): p for p in sorted(stash.rglob("*")) if p.is_file()}
+# Reinsert only the runtime .so into the repaired wheel; keep .so.debug out
+# of the manylinux artifact (debug symbols already live in debugwheelhouse).
+additions = {
+    str(p.relative_to(stash)): p
+    for p in sorted(stash.rglob("*"))
+    if p.is_file() and p.name.endswith(".so") and not p.name.endswith(".so.debug")
+}
 if not additions:
     print("No stashed heap-gotter cdylib to reinsert")
     raise SystemExit(0)
