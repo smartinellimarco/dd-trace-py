@@ -13,7 +13,7 @@
 
 #define CACHE_MAX_ENTRIES 2048
 
-template<typename K, typename V>
+template<typename K, typename V, typename Hash = std::hash<K>>
 class LRUCache
 {
   public:
@@ -40,18 +40,18 @@ class LRUCache
         // pointers. Use placement new to construct fresh empty containers,
         // abandoning the old data (intentional one-time leak).
         new (&items) std::list<std::pair<K, std::unique_ptr<V>>>();
-        new (&index) std::unordered_map<K, typename std::list<std::pair<K, std::unique_ptr<V>>>::iterator>();
+        new (&index) std::unordered_map<K, typename std::list<std::pair<K, std::unique_ptr<V>>>::iterator, Hash>();
     }
 
   private:
     size_t capacity;
     std::list<std::pair<K, std::unique_ptr<V>>> items;
-    std::unordered_map<K, typename std::list<std::pair<K, std::unique_ptr<V>>>::iterator> index;
+    std::unordered_map<K, typename std::list<std::pair<K, std::unique_ptr<V>>>::iterator, Hash> index;
 };
 
-template<typename K, typename V>
+template<typename K, typename V, typename Hash>
 void
-LRUCache<K, V>::store(const K& k, std::unique_ptr<V> v)
+LRUCache<K, V, Hash>::store(const K& k, std::unique_ptr<V> v)
 {
     // Check if cache is full
     if (items.size() >= capacity) {
@@ -66,9 +66,9 @@ LRUCache<K, V>::store(const K& k, std::unique_ptr<V> v)
     index[k] = items.begin();
 }
 
-template<typename K, typename V>
+template<typename K, typename V, typename Hash>
 Result<std::reference_wrapper<V>>
-LRUCache<K, V>::lookup(const K& k)
+LRUCache<K, V, Hash>::lookup(const K& k)
 {
     auto itr = index.find(k);
     if (itr == index.end())

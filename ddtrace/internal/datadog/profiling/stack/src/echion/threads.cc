@@ -57,8 +57,9 @@ ThreadInfo::unwind_tasks(EchionSampler& echion, PyThreadState* tstate)
     auto& uvloop_frame_cache_key = echion.uvloop_frame_cache_key();
 
     auto& frame_cache_key = using_uvloop ? uvloop_frame_cache_key : asyncio_frame_cache_key;
+    const bool cache_boundary_key = echion.persistent_frame_cache_enabled();
 
-    if (!frame_cache_key) {
+    if (!cache_boundary_key || !frame_cache_key) {
         for (size_t i = 0; i < python_stack.size(); i++) {
             const auto& frame = python_stack[i];
             auto maybe_frame_name = echion.string_table().lookup(frame.name);
@@ -112,11 +113,11 @@ ThreadInfo::unwind_tasks(EchionSampler& echion, PyThreadState* tstate)
             }
 
             if (is_boundary_frame) {
-                // Although Frames are stored in an LRUCache, the cache key is ALWAYS the same
-                // even if the Frame gets evicted from the cache.
-                // This means we can keep the cache key and reuse it to determine
-                // whether we see the boundary Frame in the Python stack.
-                frame_cache_key = frame.cache_key;
+                if (cache_boundary_key) {
+                    // The full key remains stable if the Frame is evicted. Generation changes
+                    // reset this key before a reused code-object address can match it.
+                    frame_cache_key = frame.cache_key;
+                }
                 upper_python_stack_size = python_stack.size() - i;
                 break;
             }

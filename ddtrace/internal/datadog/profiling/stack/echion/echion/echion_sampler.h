@@ -4,6 +4,8 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include <echion/cache.h>
 #include <echion/frame.h>
@@ -55,7 +57,9 @@ class EchionSampler
 
     // Caches
     StringTable string_table_;
-    LRUCache<uintptr_t, Frame> frame_cache_;
+    LRUCache<Frame::Key, Frame, FrameKeyHash> frame_cache_;
+    std::unordered_map<uintptr_t, uint64_t> code_object_generations_;
+    bool persistent_frame_cache_enabled_ = false;
 
     // Stack renderer for outputting samples
     Datadog::StackRenderer renderer_;
@@ -105,7 +109,43 @@ class EchionSampler
     const StringTable& string_table() const { return string_table_; }
 
     // Accessor for frame cache operations
-    LRUCache<uintptr_t, Frame>& frame_cache() { return frame_cache_; }
+    LRUCache<Frame::Key, Frame, FrameKeyHash>& frame_cache() { return frame_cache_; }
+    bool persistent_frame_cache_enabled() const { return persistent_frame_cache_enabled_; }
+
+    void invalidate_frame_identity_cache()
+    {
+        frame_cache_.clear();
+        asyncio_frame_cache_key_.reset();
+        uvloop_frame_cache_key_.reset();
+    }
+
+    void update_frame_cache_generations(const std::vector<InterpreterInfo>& interpreters, bool snapshot_complete)
+    {
+        std::unordered_map<uintptr_t, uint64_t> next_generations;
+        next_generations.reserve(interpreters.size());
+
+        bool valid = snapshot_complete;
+        for (const auto& interp : interpreters) {
+            if (!interp.code_object_generation_valid ||
+                !next_generations.emplace(interp.address, interp.code_object_generation).second) {
+                valid = false;
+                break;
+            }
+        }
+
+        if (!valid) {
+            invalidate_frame_identity_cache();
+            code_object_generations_.clear();
+            persistent_frame_cache_enabled_ = false;
+            return;
+        }
+
+        if (code_object_generations_ != next_generations) {
+            invalidate_frame_identity_cache();
+            code_object_generations_ = std::move(next_generations);
+        }
+        persistent_frame_cache_enabled_ = true;
+    }
 
     void postfork_child()
     {
@@ -121,6 +161,8 @@ class EchionSampler
         // because the Sampling Thread may have been modifying the cache when fork
         // took its snapshot. Traversing a corrupted list to free nodes would crash.
         frame_cache_.postfork_child();
+        new (&code_object_generations_) std::unordered_map<uintptr_t, uint64_t>();
+        persistent_frame_cache_enabled_ = false;
 
         // Also use placement new for all containers touched by the sampling thread.
         // Using placement new means the existing containers are abandoned and

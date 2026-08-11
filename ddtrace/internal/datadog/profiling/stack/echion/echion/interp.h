@@ -27,7 +27,11 @@ class InterpreterInfo
     int64_t id = 0;
     void* tstate_head = NULL;
     void* next = NULL;
+    uintptr_t address = 0;
+    uint64_t code_object_generation = 0;
+    bool code_object_generation_valid = false;
+    bool threads_valid = false;
 };
 
-void
+[[nodiscard]] bool
 for_each_interp(_PyRuntimeState* runtime, const std::function<void(InterpreterInfo& interp)>& callback);

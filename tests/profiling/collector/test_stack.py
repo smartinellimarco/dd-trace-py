@@ -150,6 +150,63 @@ def test_stack_locations(tmp_path: Path) -> None:
     pprof_utils.assert_profile_has_sample(profile, samples=samples, expected_sample=expected_sample)
 
 
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="requires CPython's code object generation")
+def test_code_object_address_reuse_does_not_return_stale_frame(tmp_path: Path) -> None:
+    test_name = "test_code_object_address_reuse_does_not_return_stale_frame"
+    pprof_prefix = str(tmp_path / test_name)
+    output_filename = pprof_prefix + "." + str(os.getpid())
+    code_filename = "echion-code-reuse.py"
+
+    assert ddup.is_available
+    ddup.config(env="test", service=test_name, version="my_version", output_filename=pprof_prefix)
+    ddup.start()
+    ddup.upload()
+
+    def make_function(name: str):
+        namespace = {"time": time}
+        source = f"def {name}(deadline):\n    while time.monotonic() < deadline:\n        pass\n"
+        exec(compile(source, code_filename, "exec"), namespace)
+        return namespace.pop(name)
+
+    old_name = "old_dynamic_function"
+
+    def sample_old_function():
+        old_function = make_function(old_name)
+        old_function(time.monotonic() + 0.3)
+        ddup.upload()
+        return id(old_function.__code__)
+
+    with stack.StackCollector():
+        old_address = sample_old_function()
+
+        replacement_function = None
+        replacement_name = ""
+        for i in range(10_000):
+            replacement_name = f"replacement_dynamic_function_{i}"
+            replacement_function = make_function(replacement_name)
+            if id(replacement_function.__code__) == old_address:
+                break
+            replacement_function = None
+        else:
+            pytest.fail("CPython did not reuse the released code object address")
+
+        assert replacement_function is not None
+        replacement_function(time.monotonic() + 0.3)
+
+    ddup.upload()
+
+    profile = pprof_utils.parse_newest_profile(output_filename)
+    samples = pprof_utils.get_samples_with_value_type(profile, "wall-time")
+    sampled_names = {
+        location.function_name
+        for sample in samples
+        for location in (pprof_utils.get_location_from_id(profile, location_id) for location_id in sample.location_id)
+        if location.filename == code_filename
+    }
+    assert replacement_name in sampled_names
+    assert old_name not in sampled_names
+
+
 def test_push_span(tmp_path: Path, tracer: Tracer) -> None:
     test_name = "test_push_span"
     pprof_prefix = str(tmp_path / test_name)

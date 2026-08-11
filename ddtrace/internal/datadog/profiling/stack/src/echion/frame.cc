@@ -12,7 +12,7 @@
 #endif // PY_VERSION_HEX >= 0x030b0000
 
 // ------------------------------------------------------------------------
-Result<Frame::Ptr>
+Result<Frame>
 Frame::create(EchionSampler& echion, PyCodeObject* code, int lasti)
 {
     auto maybe_filename = echion.string_table().key(code->co_filename, StringTag::FileName);
@@ -26,8 +26,8 @@ Frame::create(EchionSampler& echion, PyCodeObject* code, int lasti)
         return ErrorKind::FrameError;
     }
 
-    auto frame = std::make_unique<Frame>(*maybe_filename, *maybe_name);
-    auto infer_location_success = frame->infer_location(code, lasti);
+    Frame frame(*maybe_filename, *maybe_name);
+    auto infer_location_success = frame.infer_location(code, lasti);
     if (!infer_location_success) {
         return ErrorKind::LocationError;
     }
@@ -60,26 +60,15 @@ Frame::infer_location(PyCodeObject* code_obj, int instr_offset)
 Frame::Key
 Frame::key(PyCodeObject* code, int lasti, int firstlineno)
 {
-    // Include co_firstlineno in the key to prevent ABA-problem cache collisions.
-    // Python's GC can free a PyCodeObject and allocate a new one at the same address. Without
-    // firstlineno, a cached <module> frame could be returned for an unrelated function frame.
-    // The original (code_addr << 16) | lasti formula also loses the top 16 bits of code_addr
-    // and collides when lasti > 0xFFFF; this hash avoids both issues.
-    uintptr_t h = reinterpret_cast<uintptr_t>(code);
-    // 2654435761 is the Knuth multiplicative hash constant: floor(2^32 / phi), where phi is the
-    // golden ratio. It spreads sequential integers across the full 32-bit range.
-    h ^= static_cast<uintptr_t>(static_cast<uint32_t>(lasti)) * 2654435761ULL;
-    // 40503 is floor(2^16 / phi), the 16-bit analogue of the Knuth constant above.
-    h ^= static_cast<uintptr_t>(static_cast<uint32_t>(firstlineno)) * 40503ULL;
-    return h;
+    return { reinterpret_cast<uintptr_t>(code), lasti, firstlineno };
 }
 
 // ------------------------------------------------------------------------
 #if PY_VERSION_HEX >= 0x030b0000
-Result<std::reference_wrapper<Frame>>
+Result<Frame>
 Frame::read(EchionSampler& echion, _PyInterpreterFrame* frame_addr, _PyInterpreterFrame** prev_addr)
 #else
-Result<std::reference_wrapper<Frame>>
+Result<Frame>
 Frame::read(EchionSampler& echion, PyObject* frame_addr, PyObject** prev_addr)
 #endif
 {
@@ -122,7 +111,7 @@ Frame::read(EchionSampler& echion, PyObject* frame_addr, PyObject** prev_addr)
 #endif // PY_VERSION_HEX >= 0x030e0000
         *prev_addr = frame_addr->previous;
         // This is a C frame, we just need to ignore it
-        return std::ref(C_FRAME);
+        return C_FRAME;
     }
 
     if (frame_addr->owner != FRAME_OWNED_BY_THREAD && frame_addr->owner != FRAME_OWNED_BY_GENERATOR) {
@@ -185,7 +174,7 @@ Frame::read(EchionSampler& echion, PyObject* frame_addr, PyObject** prev_addr)
         return ErrorKind::FrameError;
     }
 
-    auto& frame = maybe_frame->get();
+    auto frame = std::move(*maybe_frame);
 #else
     if (frame_addr->f_code == nullptr || frame_addr->prev_instr == nullptr) {
         return ErrorKind::FrameError;
@@ -203,9 +192,9 @@ Frame::read(EchionSampler& echion, PyObject* frame_addr, PyObject** prev_addr)
         return ErrorKind::FrameError;
     }
 
-    auto& frame = maybe_frame->get();
+    auto frame = std::move(*maybe_frame);
 #endif // PY_VERSION_HEX >= 0x030d0000
-    *prev_addr = &frame == &INVALID_FRAME ? NULL : frame_addr->previous;
+    *prev_addr = frame.name == StringTable::INVALID ? NULL : frame_addr->previous;
 
 #else  // PY_VERSION_HEX < 0x030b0000
     // Unwind the stack from leaf to root and store it in a stack. This way we
@@ -221,73 +210,55 @@ Frame::read(EchionSampler& echion, PyObject* frame_addr, PyObject** prev_addr)
         return ErrorKind::FrameError;
     }
 
-    auto& frame = maybe_frame->get();
-    *prev_addr = (&frame == &INVALID_FRAME) ? NULL : reinterpret_cast<PyObject*>(py_frame.f_back);
+    auto frame = std::move(*maybe_frame);
+    *prev_addr = (frame.name == StringTable::INVALID) ? NULL : reinterpret_cast<PyObject*>(py_frame.f_back);
 #endif // PY_VERSION_HEX >= 0x030b0000
 
-    return std::ref(frame);
+    return frame;
 }
 
 // ----------------------------------------------------------------------------
-Result<std::reference_wrapper<Frame>>
+Result<Frame>
 Frame::get(EchionSampler& echion, PyCodeObject* code_addr, int lasti)
 {
-    // Read co_firstlineno before the cache lookup so it is part of the key.
-    // This prevents ABA-problem false hits: if Python frees a PyCodeObject and allocates
-    // a new one at the same address, co_firstlineno will differ and we get a cache miss
-    // (triggering a fresh read) instead of returning a stale frame (e.g. "<module>").
-    // We read only the single int field to keep the cost of cache hits low.
+    // Read co_firstlineno before the cache lookup so equality checks the complete
+    // (code address, instruction offset, first line) identity after hashing.
     int firstlineno;
     {
         auto* firstlineno_addr =
           reinterpret_cast<decltype(PyCodeObject::co_firstlineno)*>( // NOLINT(performance-no-int-to-ptr)
             reinterpret_cast<uintptr_t>(code_addr) + offsetof(PyCodeObject, co_firstlineno));
         if (copy_type(firstlineno_addr, firstlineno)) {
-            return std::ref(INVALID_FRAME);
+            return INVALID_FRAME;
         }
     }
 
     auto frame_key = Frame::key(code_addr, lasti, firstlineno);
 
-    auto maybe_frame = echion.frame_cache().lookup(frame_key);
-    if (maybe_frame) {
-        return *maybe_frame;
+    if (echion.persistent_frame_cache_enabled()) {
+        auto maybe_frame = echion.frame_cache().lookup(frame_key);
+        if (maybe_frame) {
+            return maybe_frame->get();
+        }
     }
 
     PyCodeObject code;
     if (copy_type(code_addr, code)) {
-        return std::ref(INVALID_FRAME);
+        return INVALID_FRAME;
     }
 
     auto maybe_new_frame = Frame::create(echion, &code, lasti);
     if (!maybe_new_frame) {
-        return std::ref(INVALID_FRAME);
+        return INVALID_FRAME;
     }
 
     auto new_frame = std::move(*maybe_new_frame);
-    new_frame->cache_key = frame_key;
-    new_frame->code_object = reinterpret_cast<uintptr_t>(code_addr);
-    new_frame->lasti = lasti;
-    new_frame->first_lineno = firstlineno;
-    auto& f = *new_frame;
-    echion.frame_cache().store(frame_key, std::move(new_frame));
-    return std::ref(f);
-}
-
-// ----------------------------------------------------------------------------
-Frame&
-Frame::get(EchionSampler& echion, StringTable::Key name)
-{
-    uintptr_t frame_key = static_cast<uintptr_t>(name);
-
-    auto maybe_frame = echion.frame_cache().lookup(frame_key);
-    if (maybe_frame) {
-        return *maybe_frame;
+    new_frame.cache_key = frame_key;
+    new_frame.code_object = reinterpret_cast<uintptr_t>(code_addr);
+    new_frame.lasti = lasti;
+    new_frame.first_lineno = firstlineno;
+    if (echion.persistent_frame_cache_enabled()) {
+        echion.frame_cache().store(frame_key, std::make_unique<Frame>(new_frame));
     }
-
-    auto frame = std::make_unique<Frame>(name);
-    frame->cache_key = frame_key;
-    auto& f = *frame;
-    echion.frame_cache().store(frame_key, std::move(frame));
-    return f;
+    return new_frame;
 }

@@ -3,8 +3,7 @@
 // Exercises the frame reading pipeline directly: Frame::read parses
 // _PyInterpreterFrame (3.11+) or PyFrameObject, validates owner bits,
 // computes lasti from instruction pointers, and resolves the frame
-// through Frame::get which includes LRU cache lookup/store and the
-// ABA-problem mitigation via co_firstlineno in the cache key.
+// through Frame::get, including structured cache-key construction.
 
 #include "fuzz_common.h"
 
@@ -41,9 +40,8 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 #endif
     }
 
-    // Frame::get — reads co_firstlineno for ABA detection, performs
-    // LRU cache lookup, and on miss reads the full PyCodeObject
-    // to create a new Frame via Frame::create.
+    // Frame::get reads co_firstlineno for the full key and then reads the
+    // PyCodeObject to create a new Frame via Frame::create.
     {
         (void)Frame::get(echion_sampler, reinterpret_cast<PyCodeObject*>(p1), lasti);
     }

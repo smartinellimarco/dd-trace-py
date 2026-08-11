@@ -63,11 +63,11 @@ unwind_frame(EchionSampler& echion,
             break;
         }
 
-        if (maybe_frame->get().name == StringTable::C_FRAME) {
+        if (maybe_frame->name == StringTable::C_FRAME) {
             continue;
         }
 
-        stack.push_back(maybe_frame->get());
+        stack.push_back(std::move(*maybe_frame));
         count++;
 
         if (count >= max_depth) {
