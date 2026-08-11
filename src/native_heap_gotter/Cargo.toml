@@ -37,16 +37,18 @@ default = ["live-heap"]
 # live eBPF uprobe attach. Never enabled for shipped wheels.
 test-support = ["libdd-profiling-heap-gotter/test-support"]
 
-# Mirrors the `live-heap` upstream feature enabled unconditionally in
-# [dependencies], so `cfg!(feature = "live-heap")` can report what the compiled
-# artifact actually contains. Upstream's build.rs turns the feature into the C
-# define DD_HEAP_LIVE_TRACKING=1, which makes dd_probe_free emit the
-# `ddheap:free` USDT and the alloc side stamp the per-allocation retain flag the
-# free side reconciles against. This is a property of the compiled artifact, so
-# it cannot be flipped by the Python activator at runtime.
+# Sole enablement path for upstream live-heap. Default-on here so shipped
+# wheels get balanced alloc/free sampling; omit via --no-default-features
+# (e.g. DD_CARGO_ARGS) for alloc-only builds. Upstream's build.rs turns this
+# into DD_HEAP_LIVE_TRACKING=1 so dd_probe_free emits the ddheap:free USDT and
+# the alloc side stamps the per-allocation retain flag. Keep this as the only
+# place that enables libdd-profiling-heap-gotter/live-heap so
+# cfg!(feature = "live-heap") / ddtrace_heap_gotter_live_heap_enabled() stay in
+# lockstep with what the artifact actually contains. Compile-time property;
+# the Python activator cannot flip it at runtime.
 live-heap = ["libdd-profiling-heap-gotter/live-heap"]
 
 [dependencies]
-# Pinned to the published crates.io release. `live-heap` enables balanced
-# alloc/free sampling so the profiler can report retained (live) heap.
-libdd-profiling-heap-gotter = { version = "1.0.0", features = ["live-heap"] }
+# Pinned to the published crates.io release. Live-heap is forwarded only via
+# the live-heap feature above (enabled by default), not unconditionally here.
+libdd-profiling-heap-gotter = { version = "1.0.0" }
