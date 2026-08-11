@@ -1699,6 +1699,7 @@ def test_allocator_domain_label_on_live_heap_samples(tmp_path: Path) -> None:
 
     del obj
 
+
 # Code cache correctness tests
 # ---------------------------------------------------------------------------
 
