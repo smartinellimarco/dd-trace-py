@@ -5,6 +5,20 @@
 
 #include <memory>
 
+#if defined PL_LINUX
+#include <unistd.h>
+#endif
+
+#if defined PL_LINUX
+TEST(ThreadInfoCreate, IgnoresNonPthreadPythonThreadId)
+{
+    auto thread = ThreadInfo::create(1, static_cast<unsigned long>(getpid()), "test-thread");
+
+    ASSERT_TRUE(thread);
+    EXPECT_EQ((*thread)->thread_id, 1);
+}
+#endif
+
 TEST(SamplingCycleState, UnwindReplacesTaskAndGreenletStacksFromPriorCycle)
 {
     EchionSampler echion;

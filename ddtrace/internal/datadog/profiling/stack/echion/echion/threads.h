@@ -87,19 +87,14 @@ class ThreadInfo
                                                                     const char* name)
     {
 #if defined PL_LINUX
-        // AIDEV-NOTE: Do NOT call pthread_getcpuclockid() here. It expects a real
-        // pthread_t and dereferences it as a `struct pthread *`. thread_id comes from
-        // Python's Thread.ident, which under gevent is id(greenlet) -- not a pthread_t
-        // -- so glibc would dereference an arbitrary address and crash with SIGSEGV
-        // (SEGV_ACCERR). Instead, build the per-thread CPU clock id directly from the
-        // kernel TID (native_id), which is exactly the value glibc reads from pd->tid.
-        // A bogus TID is then handled gracefully by clock_gettime() (EINVAL) in
-        // update_cpu_time(), never by a wild memory access.
+        // pthread_getcpuclockid() dereferences pthread_t, but Python's thread_id can be
+        // a gevent greenlet ID or a stale value. Derive the Linux per-thread clock from
+        // the kernel TID instead. clock_gettime() safely rejects an invalid TID with EINVAL.
         // Kernel ABI (linux posix-cpu-timers): MAKE_THREAD_CPUCLOCK(tid, SCHED).
-        constexpr clockid_t CPUCLOCK_SCHED = 2;
-        constexpr clockid_t CPUCLOCK_PERTHREAD_MASK = 4;
-        clockid_t cpu_clock_id =
-          (~static_cast<clockid_t>(native_id) << 3) | (CPUCLOCK_SCHED | CPUCLOCK_PERTHREAD_MASK);
+        constexpr uint64_t CPUCLOCK_SCHED = 2;
+        constexpr uint64_t CPUCLOCK_PERTHREAD_MASK = 4;
+        auto cpu_clock_id =
+          static_cast<clockid_t>((~static_cast<uint64_t>(native_id) << 3) | (CPUCLOCK_SCHED | CPUCLOCK_PERTHREAD_MASK));
 
         auto result = std::make_unique<ThreadInfo>(thread_id, native_id, name, cpu_clock_id);
 #elif defined PL_DARWIN
