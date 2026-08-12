@@ -118,6 +118,8 @@ TEST(FrameCache, InvalidSnapshotDisablesPersistentHits)
     EXPECT_FALSE(echion.uvloop_frame_cache_key());
 }
 
+// postfork_child intentionally abandons inherited allocations, which Valgrind must not treat as ordinary leaks.
+#ifndef ECHION_SKIP_POSTFORK_TEST
 TEST(FrameCache, ForkResetAbandonsInheritedIdentityState)
 {
     EchionSampler echion(2);
@@ -135,3 +137,4 @@ TEST(FrameCache, ForkResetAbandonsInheritedIdentityState)
     EXPECT_FALSE(echion.asyncio_frame_cache_key());
     EXPECT_FALSE(echion.uvloop_frame_cache_key());
 }
+#endif

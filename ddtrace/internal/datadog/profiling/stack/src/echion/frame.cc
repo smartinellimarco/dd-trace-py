@@ -174,7 +174,7 @@ Frame::read(EchionSampler& echion, PyObject* frame_addr, PyObject** prev_addr)
         return ErrorKind::FrameError;
     }
 
-    auto frame = std::move(*maybe_frame);
+    auto frame = *maybe_frame;
 #else
     if (frame_addr->f_code == nullptr || frame_addr->prev_instr == nullptr) {
         return ErrorKind::FrameError;
@@ -192,7 +192,7 @@ Frame::read(EchionSampler& echion, PyObject* frame_addr, PyObject** prev_addr)
         return ErrorKind::FrameError;
     }
 
-    auto frame = std::move(*maybe_frame);
+    auto frame = *maybe_frame;
 #endif // PY_VERSION_HEX >= 0x030d0000
     *prev_addr = frame.name == StringTable::INVALID ? NULL : frame_addr->previous;
 
@@ -210,7 +210,7 @@ Frame::read(EchionSampler& echion, PyObject* frame_addr, PyObject** prev_addr)
         return ErrorKind::FrameError;
     }
 
-    auto frame = std::move(*maybe_frame);
+    auto frame = *maybe_frame;
     *prev_addr = (frame.name == StringTable::INVALID) ? NULL : reinterpret_cast<PyObject*>(py_frame.f_back);
 #endif // PY_VERSION_HEX >= 0x030b0000
 
@@ -252,7 +252,7 @@ Frame::get(EchionSampler& echion, PyCodeObject* code_addr, int lasti)
         return INVALID_FRAME;
     }
 
-    auto new_frame = std::move(*maybe_new_frame);
+    auto new_frame = *maybe_new_frame;
     new_frame.cache_key = frame_key;
     new_frame.code_object = reinterpret_cast<uintptr_t>(code_addr);
     new_frame.lasti = lasti;

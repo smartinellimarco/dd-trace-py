@@ -67,7 +67,7 @@ unwind_frame(EchionSampler& echion,
             continue;
         }
 
-        stack.push_back(std::move(*maybe_frame));
+        stack.push_back(*maybe_frame);
         count++;
 
         if (count >= max_depth) {

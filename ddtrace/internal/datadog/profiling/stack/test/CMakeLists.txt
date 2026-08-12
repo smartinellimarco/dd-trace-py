@@ -104,6 +104,9 @@ configure_stack_internal_test(test_sampling_cycle_state)
 
 dd_wrapper_add_test(test_frame_cache test_frame_cache.cpp)
 configure_stack_internal_test(test_frame_cache)
+if(DO_VALGRIND)
+    target_compile_definitions(test_frame_cache PRIVATE ECHION_SKIP_POSTFORK_TEST)
+endif()
 
 dd_wrapper_add_test(test_alt_stack_ownership test_alt_stack_ownership.cpp)
 # ThreadAltStack lives in the vendored echion header tree.
