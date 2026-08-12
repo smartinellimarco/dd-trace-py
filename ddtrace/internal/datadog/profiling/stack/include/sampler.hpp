@@ -42,12 +42,10 @@ class Sampler
     std::atomic<uint64_t> thread_seq_num{ 0 };
 
     // Thread exit synchronization - allows stop() to wait for the sampling thread to exit.
-    // The mutex + condition variable pair is used to avoid the "lost wake-up" race condition
-    // where stop() could miss the notification and hang forever (or until timeout).
+    // Set before thread creation so stop() also waits while the thread is pending startup.
     std::atomic<bool> thread_running{ false };
-    // Whether the sampler is currently active. Unlike thread_running (which tracks
-    // the thread's actual lifecycle) this is set synchronously in start/stop, so
-    // it is not subject to the sampling-thread startup race.
+    // Whether the sampler is currently active. Like thread_running, this is set
+    // synchronously in start/stop, so it is not subject to the sampling-thread startup race.
     // It becomes false in stop and also when the sampling thread aborts on an
     // unexpected exception, since the sampler is then no longer active.
     // prefork reads this to decide whether to restart the sampler after fork,
@@ -118,6 +116,10 @@ class Sampler
   public:
     // Singleton instance
     static Sampler& get();
+
+#ifdef DDTRACE_TESTING
+    static void set_thread_start_hook_for_testing(void (*hook)());
+#endif
 
     // Accessor for EchionSampler
     EchionSampler& get_echion() { return *echion; }

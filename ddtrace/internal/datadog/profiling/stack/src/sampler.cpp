@@ -27,6 +27,18 @@
 
 using namespace Datadog;
 
+#ifdef DDTRACE_TESTING
+namespace {
+std::atomic<void (*)()> thread_start_hook{ nullptr };
+}
+
+void
+Sampler::set_thread_start_hook_for_testing(void (*hook)())
+{
+    thread_start_hook.store(hook);
+}
+#endif
+
 static void
 update_fast_copy_stats(ProfilerStats& stats)
 {
@@ -355,8 +367,11 @@ Sampler::capture_samples(const microsecond_t wall_time_us)
 void
 Sampler::sampling_thread(const uint64_t seq_num)
 {
-    // Mark thread as running
-    thread_running.store(true);
+#ifdef DDTRACE_TESTING
+    if (auto hook = thread_start_hook.load()) {
+        hook();
+    }
+#endif
 
     seed_fast_copy_profiler_stats();
 
@@ -780,6 +795,8 @@ Sampler::start()
     // Launch the sampling thread.
     // Thread lifetime is bounded by the value of the sequence number.  When it is changed from the value the thread was
     // launched with, the thread will exit.
+    const auto seq_num = ++thread_seq_num;
+    thread_running.store(true);
 #ifdef __linux__
     rlimit stack_sz = {};
     getrlimit(RLIMIT_STACK, &stack_sz);
@@ -788,19 +805,23 @@ Sampler::start()
     // mmap() a stack of that size (ENOMEM).  Fall back to 8 MB -- the Linux
     // default -- so the sampling thread is always created successfully.
     const size_t stack_size = (stack_sz.rlim_cur == RLIM_INFINITY) ? 8ULL * 1024 * 1024 : stack_sz.rlim_cur;
-    auto thread_id = create_thread_with_stack(stack_size, this, ++thread_seq_num);
+    auto thread_id = create_thread_with_stack(stack_size, this, seq_num);
     if (thread_id == 0) {
         sampler_active_.store(false);
+        thread_running.store(false);
+        thread_exit_cv.notify_all();
         return false;
     }
 
     pthread_detach(thread_id);
 #else
     try {
-        std::thread t(&Sampler::sampling_thread, this, ++thread_seq_num);
+        std::thread t(&Sampler::sampling_thread, this, seq_num);
         t.detach();
     } catch (const std::exception& e) {
         sampler_active_.store(false);
+        thread_running.store(false);
+        thread_exit_cv.notify_all();
         return false;
     }
 #endif
@@ -820,13 +841,10 @@ Sampler::stop()
     // change and exit.
     pause_cv_.notify_all();
 
-    // Wait for the sampling thread to actually exit (with timeout to avoid hanging forever)
+    // Profiler cleanup frees resources used by the sampling thread, so returning
+    // before it exits would turn a slow shutdown into a use-after-free.
     std::unique_lock<std::mutex> lock(thread_exit_mutex);
-    constexpr auto timeout = std::chrono::seconds(3);
-    bool exited = thread_exit_cv.wait_for(lock, timeout, [this]() { return !thread_running.load(); });
-    if (!exited) {
-        std::cerr << "Failed to stop sampling thread after timeout, exiting forcefully." << std::endl;
-    }
+    thread_exit_cv.wait(lock, [this]() { return !thread_running.load(); });
 }
 
 PauseResult
