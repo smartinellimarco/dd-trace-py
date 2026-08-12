@@ -266,23 +266,17 @@ ThreadInfo::unwind_tasks(EchionSampler& echion, PyThreadState* tstate, microseco
         leaf_tasks.erase(leaf_tasks.begin() + static_cast<std::ptrdiff_t>(n_selected), leaf_tasks.end());
     }
 
-    // Per-task wall-time scaling.
-    // When an on-CPU task occupies slot 0 it keeps the unscaled thread wall time and the remaining
-    // n_selected-1 slots represent n_total-1 off-CPU tasks.
-    // When no task is on CPU all slots are equally weighted: each represents n_total/n_selected tasks.
+    // Per-task wall-time scaling. Slot 0 keeps the unscaled thread wall time and the remaining
+    // n_selected-1 slots each represent (n_total-1)/(n_selected-1) tasks, so the per-thread total is
+    // preserved: thread_walltime * (1 + (n_total - 1)) == thread_walltime * n_total.
+    // Slot 0 cannot be scaled: StackRenderer::render_task_begin reuses the sample created by
+    // render_thread_begin for the first task on a thread, which already carries the unscaled thread
+    // wall time, so a walltime_ns override on slot 0 would be ignored.
     const int64_t thread_walltime_ns = static_cast<int64_t>(1000) * static_cast<int64_t>(wall_time_us);
-    const int64_t scaled_walltime_ns = [&]() -> int64_t {
-        if (n_selected >= n_total)
-            return thread_walltime_ns;
-        if (found_on_cpu) {
-            if (n_selected == 1) {
-                return thread_walltime_ns;
-            }
-
-            return thread_walltime_ns * static_cast<int64_t>(n_total - 1) / static_cast<int64_t>(n_selected - 1);
-        }
-        return thread_walltime_ns * static_cast<int64_t>(n_total) / static_cast<int64_t>(n_selected);
-    }();
+    const int64_t scaled_walltime_ns =
+      (n_selected > 1 && n_selected < n_total)
+        ? thread_walltime_ns * static_cast<int64_t>(n_total - 1) / static_cast<int64_t>(n_selected - 1)
+        : thread_walltime_ns;
 
     size_t leaf_task_idx = 0;
     for (auto& leaf_task : leaf_tasks) {
@@ -290,8 +284,7 @@ ThreadInfo::unwind_tasks(EchionSampler& echion, PyThreadState* tstate, microseco
         auto task_id = reinterpret_cast<uintptr_t>(leaf_task.get().origin);
         auto stack_info = std::make_unique<StackInfo>(leaf_task.get().name, leaf_task.get().is_on_cpu, task_id);
         auto& stack = stack_info->stack;
-        const bool is_protected_on_cpu = found_on_cpu && leaf_task_idx == 0;
-        if (n_selected < n_total && !is_protected_on_cpu) {
+        if (leaf_task_idx > 0) {
             stack_info->walltime_ns = scaled_walltime_ns;
         }
         ++leaf_task_idx;
@@ -749,22 +742,13 @@ ThreadInfo::unwind_greenlets(EchionSampler& echion,
         }
         snapshots.erase(snapshots.begin() + static_cast<std::ptrdiff_t>(n_selected_greenlets), snapshots.end());
     }
+    // Slot 0 keeps the unscaled thread wall time (see the note in unwind_tasks: the first entry on a
+    // thread reuses the sample created by render_thread_begin, so an override on it would be ignored).
     const int64_t thread_walltime_ns_g = static_cast<int64_t>(1000) * static_cast<int64_t>(wall_time_us);
-    const int64_t scaled_walltime_ns_g = [&]() -> int64_t {
-        if (n_selected_greenlets >= n_greenlets_total)
-            return thread_walltime_ns_g;
-        if (found_on_cpu) {
-            if (n_selected_greenlets == 1) {
-                return thread_walltime_ns_g;
-            }
-
-            return thread_walltime_ns_g * static_cast<int64_t>(n_greenlets_total - 1) /
-                   static_cast<int64_t>(n_selected_greenlets - 1);
-        }
-
-        return thread_walltime_ns_g * static_cast<int64_t>(n_greenlets_total) /
-               static_cast<int64_t>(n_selected_greenlets);
-    }();
+    const int64_t scaled_walltime_ns_g = (n_selected_greenlets > 1 && n_selected_greenlets < n_greenlets_total)
+                                           ? thread_walltime_ns_g * static_cast<int64_t>(n_greenlets_total - 1) /
+                                               static_cast<int64_t>(n_selected_greenlets - 1)
+                                           : thread_walltime_ns_g;
 
     // Phase 2: Unwind outside the lock.
     // The expensive process_vm_readv / copy_type calls happen here, without
@@ -776,8 +760,7 @@ ThreadInfo::unwind_greenlets(EchionSampler& echion,
         bool on_cpu = snap.frame == Py_None;
         auto stack_info = std::make_unique<StackInfo>(snap.name, on_cpu, snap.greenlet_id);
         auto& stack = stack_info->stack;
-        const bool is_protected_on_cpu_g = found_on_cpu && snap_idx == 0;
-        if (n_selected_greenlets < n_greenlets_total && !is_protected_on_cpu_g) {
+        if (snap_idx > 0) {
             stack_info->walltime_ns = scaled_walltime_ns_g;
         }
         ++snap_idx;

@@ -41,22 +41,7 @@ def async_run(coro: Coroutine[Any, Any, T]) -> T:
 
         return uvloop.run(coro)  # type: ignore[no-any-return]
     else:
-        # asyncio.run on Python 3.12+ uses asyncio.Runner which does not call
-        # set_event_loop, so the profiler's wrapper never fires and the loop
-        # is never tracked. Explicitly create and set the loop so the profiler
-        # can discover asyncio tasks.
-        # In production this isn't a problem: the profiler starts inside an
-        # already-running loop, so link_existing_loop_to_current_thread picks
-        # it up via get_running_loop. Tests start the profiler before the loop.
-        # We have tests specifically around showing/reproducing that behaviour and
-        # it is a known limitation that manually starting the profiler before the
-        # loop starts makes us blind to the event loop.
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+        return asyncio.run(coro)
 
 
 def uvloop_available() -> bool:
