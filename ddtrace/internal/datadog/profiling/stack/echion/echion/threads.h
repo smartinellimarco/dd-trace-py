@@ -52,7 +52,7 @@ class ThreadInfo
 #elif defined PL_DARWIN
     mach_port_t mach_port;
 #endif
-    microsecond_t cpu_time;
+    microsecond_t cpu_time = 0;
 
     uintptr_t asyncio_loop = 0;
     uintptr_t tstate_addr = 0; // Remote address of PyThreadState for accessing asyncio_tasks_head
